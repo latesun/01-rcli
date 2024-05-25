@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tower_http::services::ServeDir;
 use tracing::{info, warn};
 
 #[derive(Debug)]
@@ -16,9 +17,18 @@ pub async fn process_http_serve(path: PathBuf, port: u16) -> Result<()> {
 
     info!("Serving {:?} on {}", path, addr);
 
-    let state = HttpServeState { path };
+    let state = HttpServeState { path: path.clone() };
+
+    let dir_service = ServeDir::new(path)
+        .append_index_html_on_directories(true)
+        .precompressed_gzip()
+        .precompressed_br()
+        .precompressed_deflate()
+        .precompressed_zstd();
+
     let router = axum::Router::new()
         .route("/*path", axum::routing::get(file_handler))
+        .nest_service("/tower", dir_service)
         .with_state(Arc::new(state));
 
     let lister = tokio::net::TcpListener::bind(addr).await?;
@@ -46,5 +56,21 @@ async fn file_handler(
             warn!("Error reading file: {:?}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_file_handler() {
+        let state = Arc::new(HttpServeState {
+            path: PathBuf::from("."),
+        });
+
+        let (status, content) = file_handler(State(state), Path("Cargo.toml".to_string())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(content.trim().starts_with("[package]"));
     }
 }
